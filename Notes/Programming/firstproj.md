@@ -1,1 +1,0 @@
-# CUDA programming: Vector-addition
