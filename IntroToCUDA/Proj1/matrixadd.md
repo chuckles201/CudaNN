@@ -299,4 +299,13 @@ Ok! We:
 
 With this simple naive matrix addition, we acheived a 40x speedup (which would clearly scale for larger matrices)!
 
-### 5. TODO 3D function...
+### 5. 3D vector addition function
+
+Now, lets extend this this to addition of a 3d 'vector', and test this against our 1D vector addition.
+
+Note:
+* We will not only be intializing a 3D vector, but also 3D blocks. This essentially means that instead of doing operations of 'unrolled' vectors, we are using this dimension abstraction to preform a potentially more intuitive calculation (not in this example)
+* TODO : reason why this works!
+
+Here's the code:
+
