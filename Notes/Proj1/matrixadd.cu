@@ -5,15 +5,27 @@
 // other libs
 #include <stdio.h>
 #include <iostream>
+#include <time.h>
+#include <stdlib.h>
+#include <iostream>
 
 // global vars
-#define matX 10000
+#define matX 100
 #define matY 1000
 #define MATOVR matX * matY
 #define THREADS 256 // threads per-block
 #define m1 3 // just for checking for now
 #define m2 5
 
+// function for timing --> ignore error for clock_monotonic
+double get_time() {
+    // creating holder for time
+    struct timespec ts; 
+    clock_gettime(CLOCK_MONOTONIC,&ts); // store at ts
+    return ts.tv_sec + ts.tv_nsec * 1e-9; // nanoseconds and seconds
+
+
+}
 
 // defining Kernel
 __global__ void addGPU(int size,float* mat1, float* mat2,float*result){
@@ -26,9 +38,9 @@ __global__ void addGPU(int size,float* mat1, float* mat2,float*result){
 }
 
 // defining CPU function
-void addCPU(int size,float* mat1, float* mat2,float*result){
+void addCPU(int matsize,float* mat1, float* mat2,float*result){
 
-    for(int i = 0; i <size; i++) {
+    for(int i = 0; i < matsize; i++) {
         result[i] = mat1[i] + mat2[i];
     }
 }
@@ -36,9 +48,9 @@ void addCPU(int size,float* mat1, float* mat2,float*result){
 // initializing memory for 2 matrices (on host)
 void matrix_init(int size, float *mat1,float *mat2,float*mat3) { // pointer arrays (increment memory location)
     for (int i = 0; i<size; i++){ 
-        mat1[i] = m1; // ith memory location in array
-        mat2[i] = m2;
-        mat3[i] = 0;
+        mat1[i] = (float)m1; // ith memory location in array
+        mat2[i] = (float)m2;
+        mat3[i] = (float)0;
     }
 }
 
@@ -62,21 +74,14 @@ int main(){
     cudaMalloc(&d_x, size); // putting memory into GPU
     cudaMalloc(&d_y,size);
     cudaMalloc(&d_result,size);
-    cudaMemcpy(d_x,h_x,size,cudaMemcpyHostToDevice);
-    cudaMemcpy(d_x,h_x,size,cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x,h_x,size,cudaMemcpyHostToDevice); // copying host to device
+    cudaMemcpy(d_y,h_y,size,cudaMemcpyHostToDevice);
     cudaMemcpy(d_result,h_result,size,cudaMemcpyHostToDevice);
 
 
-    // executing on GPU ***
+    // for executing on GPU ***
     int blockSize = THREADS;
     int numBlocks = (matsize + blockSize -1) / blockSize;
-    addGPU<<<numBlocks,blockSize>>>(matsize,d_x,d_y,d_result);
-    cudaDeviceSynchronize();
-
-    // copying results to CPU
-    cudaMemcpy(h_x,d_x,size,cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_y,d_y,size,cudaMemcpyDeviceToHost);
-    printf("GPU RESULTS: %f,%f,%f\n",h_result[0],h_result[9999],h_result[234232]);
 
     // allocating memory with ptrs to array
     float *h_x_cpu, *h_y_cpu, *h_result_cpu;
@@ -86,19 +91,62 @@ int main(){
 
     // intializing CPU
     matrix_init(matsize,h_x_cpu,h_y_cpu,h_result_cpu); // initializing matrices
-    addCPU(matsize,h_x_cpu,h_y_cpu,h_result_cpu);
-    printf("CPU RESULTS : %f,%f,%f\n",h_result_cpu[0],h_result_cpu[234232],h_result_cpu[9999]);
 
 
     // 'warmup runs'
+    for (int i=0; i<3; i++){
+        addCPU(matsize,h_x_cpu,h_y_cpu,h_result_cpu);
+        addGPU<<<numBlocks,blockSize>>>(matsize,d_x,d_y,d_result);
+        cudaDeviceSynchronize();
+    }
 
+    // CPU, GPU1D, GPU3D benchmark implementations
+    // CPU run
+    double time = 0;
+    for (int i = 0; i<10; i++){
+        double start = get_time();
+        addCPU(matsize,h_x_cpu,h_y_cpu,h_result_cpu);
+        double end = get_time();
+        time += (end-start);
 
-    // CPU, GPU benchmark implementations
+    }
+    time = time/10;
+    double time1 = time;
+
+    printf("\n\nCPU AVG TIME: |%f miliseconds|\n",(float)time*1000);
+    time = 0.0;
+
+    // GPU run
+    time = 0;
+    for (int i = 0; i<10; i++){
+        double start = get_time();
+        addGPU<<<numBlocks,blockSize>>>(matsize,d_x,d_y,d_result);
+        double end = get_time();
+        time += (end-start);
+
+    }
+    time = time/10;
+    double time2 = time;
+
+    printf("GPU AVG TIME: |%f miliseconds|\n\n",time*1000.0);
+
 
 
     // Testing GPU accuracy
-    
-    // TODO: add error checking, timing, comparison
+    cudaMemcpy(h_result,d_result,size,cudaMemcpyDeviceToHost); // copying info back to host
+    bool correct = true;
+
+    for (int i=0; i<matsize; i++) {
+        if (h_result[i] != h_result_cpu[i]) {
+            correct = false;
+            break;
+        }
+    }
+    printf("All values accurate? --> |%s|\n\n",correct ? "correct":"incorrect");
+
+    printf("GPU Speedup vs. CPU : |%fx|\n\n",time1/time2);
+
+
 
     // freeing memory
     cudaFree(d_x);
