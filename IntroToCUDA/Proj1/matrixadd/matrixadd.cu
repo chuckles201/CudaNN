@@ -111,6 +111,7 @@ int main(){
         (ny + BLOCK_SIZE_Y -1) / BLOCK_SIZE_Y,
         (nz + BLOCK_SIZE_Z -1) / BLOCK_SIZE_Z
     );
+    h_result_3d = (float*)malloc(size);
     cudaMalloc(&d_result_3d,size); // same size, just in 3d!
     
 
@@ -165,7 +166,7 @@ int main(){
     // GPU run
     for (int i = 0; i<10; i++){
         double start = get_time();
-        addGPU3D<<<numBlocks3d,blockSize3d>>>(d_x,d_y,h_result_3d,nx,ny,nz);
+        addGPU3D<<<numBlocks3d,blockSize3d>>>(d_x,d_y,d_result_3d,nx,ny,nz);
         double end = get_time();
         time += (end-start);
 
@@ -179,10 +180,8 @@ int main(){
 
     // Testing GPU accuracy
     // creating memory for 3d result
-    float *result_3d;
-    result_3d = (float*)malloc(size);
     cudaMemcpy(h_result,d_result,size,cudaMemcpyDeviceToHost); // copying info back to host
-    cudaMemcpy(h_result_3d,result_3d,size,cudaMemcpyDeviceToHost); // 3d to host
+    cudaMemcpy(h_result_3d,d_result_3d,size,cudaMemcpyDeviceToHost); // 3d to host
 
     bool correct = true;
 
@@ -197,15 +196,19 @@ int main(){
 
     printf("GPU Speedup vs. CPU : |%fx|\n\n",time1/time2);
     printf("GPU 3D Speedup:%f\n",time2/time3);
+    printf("%d",h_result_3d[4]); // TODO: fix error!
 
 
 
     // freeing memory
     cudaFree(d_x);
     cudaFree(d_y);
+    cudaFree(d_result);
+    cudaFree(d_result_3d);
     free(h_x);
     free(h_y);
     free(h_result);
+    free(h_result_3d);
     free(h_x_cpu);
     free(h_y_cpu);
     free(h_result_cpu);
