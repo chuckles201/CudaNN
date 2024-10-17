@@ -10,7 +10,7 @@
 #include <iostream>
 
 // global vars
-#define matX 10000
+#define matX 100
 #define matY 1000
 #define MATOVR matX * matY
 #define THREADS 256 // threads per-block
@@ -18,7 +18,7 @@
 #define m2 5
 
 // defining dimensions for 3d vector
-#define BLOCK_SIZE_X 16
+#define BLOCK_SIZE_X 8
 #define BLOCK_SIZE_Y 8
 #define BLOCK_SIZE_Z 8
 
@@ -48,13 +48,17 @@ __global__ void addGPU3D(float *mat1, float *mat2, float *result, int nx, int ny
     int indy = blockIdx.y * blockDim.y + threadIdx.y;
     int indz = blockIdx.z * blockDim.z + threadIdx.z;
 
+
+    
+
     if (indx<nx && indy<ny && indz < nz) {// if we didn't overstep bounds
         // add unrolled index!
-        int ovr_index = (blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.x * gridDim.y) // block overall amount
-        * blockDim.x*blockDim.y*blockDim.z // converting to thread-amts
-        + threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.x*blockDim.y; // adding thread idx
-
-        result[ovr_index] = mat1[ovr_index] + mat2[ovr_index];
+        int ovr_idx = indx + indy*nx + indz*nx*ny;
+        
+        printf("*");
+        printf("GOOD-ID:%d, (%d,%d,%d)\n",ovr_idx,indx,indy,indz);
+        result[ovr_idx] = mat1[ovr_idx] + mat2[ovr_idx];
+        
     }
 } 
 
@@ -102,18 +106,19 @@ int main(){
     int blockSize = THREADS;
     int numBlocks = (matsize + blockSize -1) / blockSize;
 
+    ///////////////////////////////////////////////////////
     // Now creating functions for 3D GPU
     float *h_result_3d, *d_result_3d; // stores in memory
-    int nx=100,ny=100,nz=1000; // 10m array
+    int nx=100,ny=100,nz=10; // 10m array
     dim3 blockSize3d(BLOCK_SIZE_X,BLOCK_SIZE_Y,BLOCK_SIZE_Z);
     dim3 numBlocks3d( // making sure we have enough dimesnions in 3d grid
-        (nx + BLOCK_SIZE_X -1) / BLOCK_SIZE_X,
-        (ny + BLOCK_SIZE_Y -1) / BLOCK_SIZE_Y,
-        (nz + BLOCK_SIZE_Z -1) / BLOCK_SIZE_Z
+        (nx + blockSize3d.x -1) / BLOCK_SIZE_X,
+        (ny + blockSize3d.y -1) / BLOCK_SIZE_Y,
+        (nz + blockSize3d.z -1) / BLOCK_SIZE_Z
     );
     h_result_3d = (float*)malloc(size);
     cudaMalloc(&d_result_3d,size); // same size, just in 3d!
-    
+    //////////////////////////////////////////////////////////
 
     // allocating memory with ptrs to array
     float *h_x_cpu, *h_y_cpu, *h_result_cpu;
@@ -153,6 +158,7 @@ int main(){
     for (int i = 0; i<10; i++){
         double start = get_time();
         addGPU<<<numBlocks,blockSize>>>(matsize,d_x,d_y,d_result);
+        cudaDeviceSynchronize();
         double end = get_time();
         time += (end-start);
 
@@ -163,10 +169,11 @@ int main(){
 
     time = 0.0;
 
-    // GPU run
+    // GPU3D run
     for (int i = 0; i<10; i++){
         double start = get_time();
         addGPU3D<<<numBlocks3d,blockSize3d>>>(d_x,d_y,d_result_3d,nx,ny,nz);
+        cudaDeviceSynchronize();
         double end = get_time();
         time += (end-start);
 
@@ -196,7 +203,7 @@ int main(){
 
     printf("GPU Speedup vs. CPU : |%fx|\n\n",time1/time2);
     printf("GPU 3D Speedup:%f\n",time2/time3);
-    printf("%d",h_result_3d[4]); // TODO: fix error!
+    printf("%f,%f,%f\n",h_result_3d[40],h_result_3d[400],h_result_3d[4000]); // TODO: fix error!
 
 
 

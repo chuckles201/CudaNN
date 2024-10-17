@@ -9,12 +9,12 @@
 #include <stdlib.h>
 #include <iostream>
 
-// global descriptors
-#define MATM1 100
-#define MATN1 100
+// global descriptors M1,N2, M2/N1
+#define M 100
+#define N 100
+#define K 100
 
-#define MATM2 100
-#define MATN2 100
+#define BLOCK_SIZE 16
 
 //////////////////////////////////////////////////////////////////
 // helper functions
@@ -40,7 +40,7 @@ void matMulCPU(float *A, float *B, float *C, int mn, int m1, int n2) {
                 dot += A[i*mn + k] * B[k*n2+i];
             }
             C[i*m1 + j] = dot;
-            printf("ID:%d,(%d,%d) : %f\n", i*n2 + j,i,j,dot);
+            
         }
 
 
@@ -48,30 +48,80 @@ void matMulCPU(float *A, float *B, float *C, int mn, int m1, int n2) {
 }
 /////////////////////////////////////////////////////////////////////
 
+/////////////////////////////////////////////////////////////////////
+// GPU matmul!
+__global__ void matMulGPU(float *A, float *B, float *C, int k,int m,int n) {
+    // entire element (dot prod) for each thread
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int col = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (row < m && col < n) {
+
+        float dot = 0.0f;
+        for (int i = 0; i < k; i++) {
+            dot += A[row*k + i] * B[col + i*k];
+        }
+        C[row*n+col] = dot;
+    }
+}
+
+/////////////////////////////////////////////////////////////////////
+
 int main() {
 
+    /////////////////////////////////////////////////////////////////////
     // simple CPU implementation 
-    float *mat1, *mat2, *result_cpu;
-    int matsize1 = MATM1 * MATN1;
-    int matsize2 = MATM2 * MATN2;
-    int matsize3 = MATM1 * MATN2;
-    mat1 = (float*)malloc(sizeof(float)*matsize1);
-    mat2 = (float*)malloc(sizeof(float)*matsize2);
+    float *mat1_cpu, *mat2_cpu, *result_cpu;
+    int matsize1 = M * K; // use for all
+    int matsize2 = N * K;
+    int matsize3 = M * N;
+    mat1_cpu = (float*)malloc(sizeof(float)*matsize1);
+    mat2_cpu = (float*)malloc(sizeof(float)*matsize2);
     result_cpu = (float*)malloc(sizeof(float)*matsize3);
-    matrixInit(matsize1,mat1); // assinging values to memory positions
-    matrixInit(matsize2,mat2);
+    matrixInit(matsize1,mat1_cpu); // assinging values to memory positions
+    matrixInit(matsize2,mat2_cpu);
+    //////////////////////////////////////////////////////////////
 
-    matMulCPU(mat1,mat2,result_cpu,MATN1,MATM1,MATN2);
 
-    printf("Checking... %f,%f,%f", result_cpu[100],result_cpu[90],result_cpu[0]);
+    ////////////////////////////////////////////////////////////////
+    // GPU implementation
+    // initializing memory
+    float *result_h;
+    float *mat1_d, *mat2_d, *result_d;
+    result_h = (float*)malloc(sizeof(float)*matsize3);
+    matrixInit(matsize1,mat1_cpu);
+    matrixInit(matsize2,mat2_cpu);
+
+    cudaMalloc(&mat1_d,sizeof(float)*matsize1);
+    cudaMalloc(&mat2_d,sizeof(float)*matsize2);
+    cudaMalloc(&result_d,sizeof(float)*matsize3);
+    cudaMemcpy(mat1_d,mat1_cpu,sizeof(float)*matsize1,cudaMemcpyHostToDevice);
+    cudaMemcpy(mat2_d,mat2_cpu,sizeof(float)*matsize2,cudaMemcpyHostToDevice);
+
+    // grid and block dimensions
+    dim3 blockDim(BLOCK_SIZE,BLOCK_SIZE);
+    dim3 gridDim((M + BLOCK_SIZE-1) / BLOCK_SIZE,
+                 (N + BLOCK_SIZE-1) / BLOCK_SIZE
+    );
+    /////////////////////////////////////////////////////////////////
+
+    // warmup steps
+    for (int i=0; i<3; i++) {
+        matMulCPU(mat1_cpu,mat2_cpu,result_cpu,K,M,N);
+        matMulGPU<<<gridDim,blockDim>>>(mat1_d,mat2_d,result_d,K,M,N);
+        cudaDeviceSynchronize();
+    }
+    cudaMemcpy(result_h,result_d,sizeof(float)*matsize3,cudaMemcpyDeviceToHost);
+    printf("GPURESULTS: %f,%f,%f,%f\n",result_h[9999],result_h[250],result_h[300],result_h[0]);
+
+    printf("CPURESULTS: %f,%f,%f\n",result_cpu[9999],result_cpu[0],result_cpu[5267]);
 
     // freeing memory
-    free(mat1);
-    free(mat2);
+    free(mat1_cpu);
+    free(mat2_cpu);
     free(result_cpu);
-
-
-
-
+    cudaFree(mat1_d);
+    cudaFree(mat2_d);
+    cudaFree(result_d);
 
 }

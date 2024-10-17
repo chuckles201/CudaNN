@@ -305,7 +305,8 @@ Now, lets extend this this to addition of a 3d 'vector', and test this against o
 
 Note:
 * We will not only be intializing a 3D vector, but also 3D blocks. This essentially means that instead of doing operations of 'unrolled' vectors, we are using this dimension abstraction to preform a potentially more intuitive calculation (not in this example)
-* TODO : reason why this works!
 
 Here's the code:
+
+    In progres... not working for some reason:((
 
