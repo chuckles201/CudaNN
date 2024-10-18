@@ -9,10 +9,13 @@
 #include <stdlib.h>
 #include <iostream>
 
+// nvtx
+#include <nvtx3/nvToolsExt.h>
+
 // global descriptors M1,N2, M2/N1
-#define M 100
-#define N 100
-#define K 100
+#define M 512
+#define N 256
+#define K 512 // why doesn't work?
 
 #define BLOCK_SIZE 16
 
@@ -92,11 +95,13 @@ int main() {
     matrixInit(matsize1,mat1_cpu);
     matrixInit(matsize2,mat2_cpu);
 
+    nvtxRangePush("Operation1");
     cudaMalloc(&mat1_d,sizeof(float)*matsize1);
     cudaMalloc(&mat2_d,sizeof(float)*matsize2);
     cudaMalloc(&result_d,sizeof(float)*matsize3);
     cudaMemcpy(mat1_d,mat1_cpu,sizeof(float)*matsize1,cudaMemcpyHostToDevice);
     cudaMemcpy(mat2_d,mat2_cpu,sizeof(float)*matsize2,cudaMemcpyHostToDevice);
+    nvtxRangePop();
 
     // grid and block dimensions
     dim3 blockDim(BLOCK_SIZE,BLOCK_SIZE);
@@ -111,10 +116,50 @@ int main() {
         matMulGPU<<<gridDim,blockDim>>>(mat1_d,mat2_d,result_d,K,M,N);
         cudaDeviceSynchronize();
     }
-    cudaMemcpy(result_h,result_d,sizeof(float)*matsize3,cudaMemcpyDeviceToHost);
-    printf("GPURESULTS: %f,%f,%f,%f\n",result_h[9999],result_h[250],result_h[300],result_h[0]);
 
-    printf("CPURESULTS: %f,%f,%f\n",result_cpu[9999],result_cpu[0],result_cpu[5267]);
+
+    // Benchmarking
+    double time_cpu = 0;
+    double time_gpu = 0;
+
+    for (int i=0; i < 30; i++) { // CPU run
+        double start = getTime();
+        matMulCPU(mat1_cpu,mat2_cpu,result_cpu,K,M,N);
+        double end = getTime();
+        time_cpu += (end-start);
+        printf("CPU run %d : |%f secs|\n",i,(end-start));
+    }
+
+    time_cpu /= 10;
+
+    for (int i=0; i < 30; i++) { // GPU run
+        double start = getTime();
+        matMulGPU<<<gridDim,blockDim>>>(mat1_d,mat2_d,result_d,K,M,N);
+        cudaDeviceSynchronize();
+        double end = getTime();
+        time_gpu += (end-start);
+        printf("GPU run %d : |%f secs|\n",i,(end-start));
+    }
+
+    time_gpu /= 10;
+
+    printf("\nGPU AVG TIME: %f\n", time_gpu);
+    printf("CPU AVG TIME: %f\n\n", time_cpu);
+
+    printf("GPU SPEEDUP: {%fX}\n",(time_cpu/time_gpu));
+
+    cudaMemcpy(result_h,result_d,sizeof(float)*matsize3,cudaMemcpyDeviceToHost);
+    
+    bool correct = true;
+    printf("SOMERESULTS: %f,%f,%f",result_h[255000],result_h[0],result_h[4]);
+    for (int i = 0; i<matsize3; i++) {
+        if (fabs(result_h[i] - result_cpu[i]) > 1e-5) {
+            correct = false;
+            printf("***,%d",i);
+            break;
+        }
+    }
+    printf("All values are --> %s\n",correct ? "ACCURATE":"INCORRECT");
 
     // freeing memory
     free(mat1_cpu);
@@ -122,6 +167,6 @@ int main() {
     free(result_cpu);
     cudaFree(mat1_d);
     cudaFree(mat2_d);
-    cudaFree(result_d);
+    cudaFree(result_d); 
 
 }
