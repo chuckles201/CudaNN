@@ -35,20 +35,23 @@ void matrixInit(float *m, int size) {
 }
 
 // Naive kernel
-__global__ void sgemm_naive(int m,int n,int k,float alpha, float *A, float* B,float beta,float *C){
+__global__ void sgemm_coalesced(int m,int n,int k,float alpha, float *A, float* B,float beta,float *C){
 
-    // position in mat for thread
-    int x = threadIdx.x + blockIdx.x * blockDim.x; // row
-    int y = threadIdx.y + blockIdx.y * blockDim.y; // col
+    // x down, controls down
+    const int x = blockIdx.x*BLOCK_SIZE + 
+    (threadIdx.x/BLOCK_SIZE); // how far down within a block (to side!)
+    // side, controls side
+    const int y = blockIdx.y*BLOCK_SIZE + 
+    (threadIdx.x%BLOCK_SIZE); // how far to l/r in block (down!);
     
 
     if (y < n && x < m) {
         // dot product of ith row m1/ jth col i2
         float tmp = 0;
-        for(int l = 0; l < k; l++) {
-            tmp += A[x*n + l] * B[y + l*n];
+        for(int l = 0; l < k; ++l) {
+            tmp += A[x*k + l] * B[y + l*n]; // ith by x, jth by y
         }
-        C[x*n + y] = tmp;
+        C[x*n + y] = tmp*alpha + beta*C[x*n+y]; // adding and multiplying
     }
 
 }
@@ -64,6 +67,7 @@ int main() {
 
     matrixInit(a_h,M*K);
     matrixInit(b_h,N*K);
+    matrixInit(c_h,M*N);
 
     // feeding information to device
     cudaMalloc(&a_d,sizeof(float)*M*K);
@@ -71,24 +75,26 @@ int main() {
     cudaMalloc(&c_d,sizeof(float)*M*N);
     cudaMemcpy(a_d,a_h,sizeof(float)*M*K,cudaMemcpyHostToDevice);
     cudaMemcpy(b_d,b_h,sizeof(float)*N*K,cudaMemcpyHostToDevice);
+    cudaMemcpy(c_d,c_h,sizeof(float)*N*K,cudaMemcpyHostToDevice);
     //------------------------------------------------
 
     float alpha = 0.001;
-    float beta = 0.001;
+    float beta = 1-alpha;
     
-    dim3 blockSize = {BLOCK_SIZE,BLOCK_SIZE,1};
+    // dimensions for x/y
+    dim3 blockSize = {BLOCK_SIZE*BLOCK_SIZE}; //1d to manip.
     dim3 numBlocks = {(M+BLOCK_SIZE-1)/BLOCK_SIZE,
-                      (N+BLOCK_SIZE-1)/BLOCK_SIZE, 1};
+                      (N+BLOCK_SIZE-1)/BLOCK_SIZE};
 
 
 
     // running and debugging
-    nvtxRangePush("Operation1");
+    //nvtxRangePush("Operation1");
     double start = get_time();
-    sgemm_naive<<<numBlocks,blockSize>>>(M,N,K,alpha,a_d,b_d,beta,c_d);
+    sgemm_coalesced<<<numBlocks,blockSize>>>(M,N,K,alpha,a_d,b_d,beta,c_d);
     cudaDeviceSynchronize();
     double end = get_time();
-    nvtxRangePop();
+    //nvtxRangePop();
 
 
 

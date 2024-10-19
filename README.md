@@ -4,3 +4,7 @@ Hello, in this repository I will be coding a neural network (architecture TBD) f
 
 This is for educational purposes primarily, but hopefuly it can acheive some cool results, and really push towards
 the cutting edge of DL library speeds through high quality kernels.
+
+## Goals
+1. Write a Kernel that beats state-of-the-art for some DL task.
+2. Build NN from scratch with CUDA
