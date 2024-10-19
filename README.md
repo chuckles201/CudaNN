@@ -8,3 +8,5 @@ the cutting edge of DL library speeds through high quality kernels.
 ## Goals
 1. Write a Kernel that beats state-of-the-art for some DL task.
 2. Build NN from scratch with CUDA
+3. Understand CUDA landscape in modern DL and fully
+understand important/recent research
