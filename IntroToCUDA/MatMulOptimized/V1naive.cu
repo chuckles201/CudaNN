@@ -29,20 +29,20 @@ double get_time() {
 // matrix init function:
 void matrixInit(float *m, int size) {
     for (int i = 0; i < size; i++) {
-        m[i] = 10.0;
+        m[i] = 2.0;
 
     }
 }
 
-// Naive kernel
+//Coalsced global memory
 __global__ void sgemm_coalesced(int m,int n,int k,float alpha, float *A, float* B,float beta,float *C){
 
     // x down, controls down
     const int x = blockIdx.x*BLOCK_SIZE + 
-    (threadIdx.x/BLOCK_SIZE); // how far down within a block (to side!)
+    (threadIdx.x%BLOCK_SIZE); // how far down within a block (to side!)
     // side, controls side
     const int y = blockIdx.y*BLOCK_SIZE + 
-    (threadIdx.x%BLOCK_SIZE); // how far to l/r in block (down!);
+    (threadIdx.x/BLOCK_SIZE); // how far to l/r in block (down!);
     
 
     if (y < n && x < m) {
@@ -78,7 +78,7 @@ int main() {
     cudaMemcpy(c_d,c_h,sizeof(float)*N*K,cudaMemcpyHostToDevice);
     //------------------------------------------------
 
-    float alpha = 0.001;
+    float alpha = 1;
     float beta = 1-alpha;
     
     // dimensions for x/y
@@ -87,6 +87,13 @@ int main() {
                       (N+BLOCK_SIZE-1)/BLOCK_SIZE};
 
 
+
+    // warmup
+    for (int i = 0; i < 4; i++){
+        sgemm_coalesced<<<numBlocks,blockSize>>>(M,N,K,alpha,a_d,b_d,beta,c_d);
+        cudaDeviceSynchronize();
+    
+    }
 
     // running and debugging
     //nvtxRangePush("Operation1");

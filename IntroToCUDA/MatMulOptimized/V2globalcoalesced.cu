@@ -18,8 +18,6 @@
 
 #define BLOCK_SIZE 32
 
-#define SMEM_CHUNK_SIZE 32
-
 // time function
 double get_time() {
     struct timespec ts;
@@ -31,54 +29,31 @@ double get_time() {
 // matrix init function:
 void matrixInit(float *m, int size) {
     for (int i = 0; i < size; i++) {
-        m[i] = 10.0;
+        m[i] = 2.0;
 
     }
 }
 
-// SMEM sharing with DRAM coalescing 
-__global__ void smemMatMul(int m, int n, int k, float *A, float *B, float *C, float alpha, float beta) {
+//Coalsced global memory
+__global__ void sgemm_coalesced(int m,int n,int k,float alpha, float *A, float* B,float beta,float *C){
 
-    // defining where we are in block
-    const int blockRow = blockIdx.x * BLOCK_SIZE;
-    const int blockCol = blockIdx.y * BLOCK_SIZE;
-
-    const int threadRow = threadIdx.x / BLOCK_SIZE;
-    const int threadCol = threadIdx.x % BLOCK_SIZE;
-
-    // Starting pointers off at their first 'slide'
-    // make sure cont. threads load from same col
-    //-for global mem (DRAM) coalescing
-    A += blockRow * K;
-    B += blockCol;
-    C += blockRow*N + blockCol;
-
-    // allocate smem
-    __shared__ float As[SMEM_CHUNK_SIZE*BLOCK_SIZE];
-    __shared__ float Bs[SMEM_CHUNK_SIZE*BLOCK_SIZE];
-
-    // 'sliding block' loop
-    float tmp = 0.0; // storing our value
-    for (int blck = 0; blck < K; blck += SMEM_CHUNK_SIZE) {
-        // loading memory DRAM-->SMEM
-        As[threadIdx.x] = A[threadCol + threadRow * SMEM_CHUNK_SIZE];
-        Bs[threadIdx.x] = A[threadCol + threadRow * BLOCK_SIZE];
-        __syncthreads(); // making sure all memory loaded
-
-        // getting pointer ready for next load
-        A += SMEM_CHUNK_SIZE;
-        B += SMEM_CHUNK_SIZE * N;
-
-        for (int l = 0; l < SMEM_CHUNK_SIZE; l++) {
-            tmp += As[threadRow*SMEM_CHUNK_SIZE + l] * 
-                   Bs[threadCol + l*BLOCK_SIZE];
-        }
-
-        __syncthreads();// need all memory 
-
-    }
-    C[threadRow*N + threadCol] = tmp*alpha + C[threadRow*N + threadCol]*beta;
+    // x down, controls down
+    const int x = blockIdx.x*BLOCK_SIZE + 
+    (threadIdx.x/BLOCK_SIZE); // how far down within a block (to side!)
+    // side, controls side
+    const int y = blockIdx.y*BLOCK_SIZE + 
+    (threadIdx.x%BLOCK_SIZE); // how far to l/r in block (down!);
     
+
+    if (y < n && x < m) {
+        // dot product of ith row m1/ jth col i2
+        float tmp = 0;
+        for(int l = 0; l < k; ++l) {
+            tmp += A[x*k + l] * B[y + l*n]; // ith by x, jth by y
+        }
+        C[x*n + y] = tmp*alpha + beta*C[x*n+y]; // adding and multiplying
+    }
+
 }
 
 
@@ -103,7 +78,7 @@ int main() {
     cudaMemcpy(c_d,c_h,sizeof(float)*N*K,cudaMemcpyHostToDevice);
     //------------------------------------------------
 
-    float alpha = 0.001;
+    float alpha = 1;
     float beta = 1-alpha;
     
     // dimensions for x/y
@@ -111,12 +86,19 @@ int main() {
     dim3 numBlocks = {(M+BLOCK_SIZE-1)/BLOCK_SIZE,
                       (N+BLOCK_SIZE-1)/BLOCK_SIZE};
 
+
+
+    // warmup
+    for (int i = 0; i < 4; i++){
+        sgemm_coalesced<<<numBlocks,blockSize>>>(M,N,K,alpha,a_d,b_d,beta,c_d);
+        cudaDeviceSynchronize();
     
+    }
 
     // running and debugging
     //nvtxRangePush("Operation1");
     double start = get_time();
-    smemMatMul<<<numBlocks,blockSize>>>(M,N,K,a_d,b_d,c_d,alpha,beta);
+    sgemm_coalesced<<<numBlocks,blockSize>>>(M,N,K,alpha,a_d,b_d,beta,c_d);
     cudaDeviceSynchronize();
     double end = get_time();
     //nvtxRangePop();
@@ -127,7 +109,7 @@ int main() {
     // checking results
     printf("Time: %fms\n",(end-start)*1000.0);
     cudaMemcpy(c_h,c_d,sizeof(float)*M*N,cudaMemcpyDeviceToHost);
-    printf("GPU Results: (%f,%f,%f,%f)\n",c_h[30],c_h[10000],c_h[1000000],c_h[99999]);
+    printf("GPU Results: (%f,%f)\n",c_h[30],c_h[10000]);
     
 
 

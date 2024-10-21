@@ -165,6 +165,103 @@ Cacheing memory with smem (each thread loads a number)
 
 > Registers are local variables that are local to the thread, and therefore even faster. then smem (shared within block) They store constants and information about what a thread should do. 
 
-So, if we have too many registers, we can't run many threads concurrently, and if we use too much SMEM per block, we will exceed the maximum capacity. Also, there is a max number of warps we can have due to hardware limitations.
+So, if we have too many registers, we can't run many threads concurrently, and if we use too much SMEM per block, we will exceed the maximum capacity. Also, there is a max number of warps (maxThreads/warpSize) we can have due to hardware limitations.
+
+Work assigned to an sm has a scheduling granularity (size) of blocks. Furthermore, registers are loaded in multiples of 256 which have warp granularity.
+
+We can use:
+
+    nvcc -arch=sm_89 -Xptxas -v my_program.cu -o run
+
+
+to get this information.
+
+Now, we get an output which tells us the information about each threads register usage (35), and each thread blocks sm usage.
+
+> So, given the memory usage, threads, and registers we use, we can now calculate the bottleneck of the amount of blocks we can load into an sm (and calculate occupancy: #warps in sm / total warp capacity)
+
+        SMEM max blocks = 100kb/8 + 1(runtime usage)kb = 11 blocks
+        Regs/waps = 37*32 = 1280 (1184 rounded up) *32 = 4096 --> 1 block
+        Warps max blocks = 48/32 => 1 block
+
+We can only load 1 block at a time, however, we acheive an occupancy of 32/48, which is considered decent.
+
+---------------------------------------------------------------------------------
+#### *Aside*: Analyzing Kernels with profiler
+Lets run nsys profile to get information about our kernel. First we must include our nvtx push and pop commands to store information about specific kernels and operations.
+
+        nvcc -o run matmulV3.cu -lnvToolsExt
+        ncu --set detailed -o report ./run
+        (choose betw: basic,roofline,detailed,full)
+
+this gives us in-depth information about how our kernel behaves and what is happening within each sm. The profiler will give us detailed information about our kernel, and we will be able to see each memory load, operation, and look for any bottlenecks.
+
+Now, we can open up the ncu ui, and dig into the information that our profile generated.
+
+1. ***Executed Instruction Mix***
+![mix](executedinstmix.png)
+
+Here is the 'instruction mix' for our kernel.
+
+1. LDS are memory loads.
+2. FMA are fused multiply-adds (in our dot product)
+3. IADD3 are our pointer additions
+
+Looks like we are spenting a disproportional amount of time
+
+
+If we want to look further we can run this to see the compiler code
+
+        nvcc -ptx matmulV3.cu
+
+        output:
+        ...
+        ld.shared.f32 	%f11, [%r5+128];
+        ld.shared.f32 	%f12, [%r4+4];
+        fma.rn.f32 	%f13, %f12, %f11, %f10;
+        ld.shared.f32 	%f14, [%r5+256];
+        ld.shared.f32 	%f15, [%r4+8];
+        fma.rn.f32 	%f16, %f15, %f14, %f13;
+        ...
+
+there is a clear pattern of two loads and one fused multiply-add. This is a likely  problem as a given thread will spend more time waiting for memory rather than preforming operations.
+
+We know that we should be compute-bound, but the two loads are undeniably taking more time than the fma, which loads information from the register almost instentaneously.
+
+Furthermore, here are our ***warp state statistics***
+![warp states](warp-stat.png)
+
+Stall MIO throttle means our warp states are innactive waiting for some memory to load (memory input/output). This is not ideal, we do *not* want our warps idle at all. Ideally, since our problem is so compute intensive, they should almost always be preforming compute operations, and memory will be loading in during this.
+
+>[KEY CONCEPT]<br>
+> GPU's hide latency by de-activating a warp when it is waiting for memory and rapidly switching to another, meaning effectively the memory loading and computations happen concurrently (there is seperate hardware for loads, and ops). However, if there is a signficant memory wait time, then this will be the bottleneck. This is why the time taken to execute a kernel is given by: max(mem_time,compute_time). <br>
+> Therefore, a compute bound GPU would look like: active warps taking a while to complete, while the memory is already loaded. While, a memory-bound would be rapidly completing operations, and switching to active kernels that still had not yet loaded their memory. 
+
+Ok, now equipped with the information that our kernel is very memory-intensive on both the invidiual thread level, and the overall statistics of the active-warps, we can try to make our kernels more compute-heavy.
+
+Now we just need to answer the question: how do we keep smem down, while doing more computations per thread?
+---------------------------------------
+>[NOTE]<br>
+> ptx is compiler assembly-like code that gives the exact instructions for each thread. If there are abstractions like for-loops in cuda/C++ code, we can see exactly what is happening in the ptx code. <br>
+
+
+>[NOTE]<br>
+> Remember that our calculation of being compute bound is assuming that we do the minimum amount of loading from Dram. However, as long as we dont do 10x more than this minimum, we will acheive compute-boundeness, and no more optimization is possible for the memory
+---------------------------------------
+## Kernel V4: 1D blocktiling (multiple results per thread)
+> our goal here to do more computations per thread for the smem that we load
+
+- The strategy here will be to calculate a row for each thread. We will index into A,B, and C pointers as done before, but now we will calculate 8 elements per thread. Each thread will be assigned its own collumn, load this into its register, and then: 
+1. Load a row index from smem
+2. Compute the fused multiply-add
+
+this will allow us to have only one smem read per operation!
+
+- We are loading half the memory per block as before (4kb), but each block will now be comprised. of only 1 warp.
+
+
+
+
+
 
 

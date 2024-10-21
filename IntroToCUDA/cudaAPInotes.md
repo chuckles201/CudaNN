@@ -12,10 +12,20 @@
         ...
         nvtxRangePop(); //operation tracked
 
-2. Then we can simple run in the terminal:
+Then we can simple run in the terminal:
 
         nvcc -o test matmul.cu -lnvToolsExt
 
-        nsys profile --stats=true ./test
+        nsys profile -o ./test
+        nsys-ui profile
+        or
+        ncu -o profile ./test
+        ncu-ui profile
+        
+this will give us simple stats about our program!
 
-this will give us stats about our program!
+2. Useful commands for debugging memory usage/compiler code
+        nvcc -ptx matmulV3.cu --> full compiler code
+        nvcc -arch=sm_89 -Xptxas -v my_program.cu -o run --> registers/smem info
+
+

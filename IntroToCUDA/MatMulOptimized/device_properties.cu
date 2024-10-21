@@ -24,11 +24,12 @@ void printDeviceProperties() {
     cout << "WarpSize: " << prop.warpSize << std::endl;
     cout << "SMEM / SM " << prop.sharedMemPerMultiprocessor << " bytes" << std::endl;
     cout << "Warps per SM (threads per sm/warpsize) " << prop.maxThreadsPerMultiProcessor / prop.warpSize << std::endl;
+    cout << "Max reg per SM (same for all new GPUs): " << 64*1024;
 
     // specific to our kernel
     cout << "------------------------------------------" << std::endl;
-    cout << "Registers per thread: " << 32*32  << endl;
-    cout << "SMEM per Block: " << 32*32*4 << " B" << endl;
+    cout << "Registers per thread: 35" << 1  << endl; // local vars
+    cout << "SMEM per Block: 4KB" << 32*32*4 << " B" << endl;
     cout << "threads per Block: " << 32*32  << endl;
 
 }
