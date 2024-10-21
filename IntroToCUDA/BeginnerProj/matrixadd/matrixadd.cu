@@ -203,7 +203,7 @@ int main(){
 
     printf("GPU Speedup vs. CPU : |%fx|\n\n",time1/time2);
     printf("GPU 3D Speedup:%f\n",time2/time3);
-    printf("%f,%f,%f\n",h_result_3d[40],h_result_3d[400],h_result_3d[4000]); // TODO: fix error!
+    printf("%f,%f,%f\n",h_result_3d[40],h_result_3d[400],h_result_3d[4000]); 
 
 
 

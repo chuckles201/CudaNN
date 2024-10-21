@@ -19,7 +19,7 @@ Then we can simple run in the terminal:
         nsys profile -o ./test
         nsys-ui profile
         or
-        ncu -o profile ./test
+        ncu --set detailed -o profile ./test
         ncu-ui profile
         
 this will give us simple stats about our program!

@@ -251,15 +251,122 @@ Now we just need to answer the question: how do we keep smem down, while doing m
 ## Kernel V4: 1D blocktiling (multiple results per thread)
 > our goal here to do more computations per thread for the smem that we load
 
-- The strategy here will be to calculate a row for each thread. We will index into A,B, and C pointers as done before, but now we will calculate 8 elements per thread. Each thread will be assigned its own collumn, load this into its register, and then: 
-1. Load a row index from smem
-2. Compute the fused multiply-add
+In this next kernel, we still utilize SMEM cacheing and make sure that we group our loads with GMEM coalescing. However, a key difference is the block size. Each block will have 8x64 threads, which will calculate a 64x64 chunk
+- Each thread will calculate 8 different elements
+- We will save the ith element of the jth collumn the a given thread is calculating, and dot it with all of the first collumns (we'll have the row-loop inside the dot product loop) allowing us to store a value in Bs in the register for 8 calculations
 
-this will allow us to have only one smem read per operation!
+So, in summary, each block will calculate a 64x64 chunk of the matrix. Each thread will calculate a 2d section of the block (8x1 elements), and we will still be sliding our block tile around the rows of A and collumns of B to cache info. in the smem.
 
-- We are loading half the memory per block as before (4kb), but each block will now be comprised. of only 1 warp.
+Here is an illustration that really helps:
 
+-----------------------------------------------------
+<div style="background-color:white;">
 
+![kernel pic](kernel_4_1D_blocktiling.png)
+
+</div>
+-------------------------------------------------------
+
+Here is the code:
+
+        // smem cacheing + global mem coalescing + 1d blocktiling
+        __global__ void blockTile1D(int m, int n, int k, float *A, float *B, float *C,int alpha,int beta){
+            // defining our block position
+            const int blockCol = blockIdx.x;
+            const int blockRow = blockIdx.y;
+
+            // defining how large our 'slides' will be
+            // A: BMxBK, B: BK*BN
+            const int BM = 64;
+            const int BN = 64; 
+            const int BK = 8;
+            const int TM = 8;
+
+            assert(BM*BN == TM*BK*BM); // making sure the number we calculate equal to number we must
+
+            // getting pointers at starting position alligned w/block
+            A += blockRow*BM*K;
+            B += blockCol*BN;
+            C += blockRow*BN*N + blockCol*BM;
+
+            // defining how we load A/Bs with threads,
+            // make sure we access continously, and shapes match
+            const int threadRowA = threadIdx.x / BK;
+            const int threadColA = threadIdx.x % BK;
+            const int threadRowB = threadIdx.x / BN;
+            const int threadColB = threadIdx.x % BN;
+
+            // shared smem for As and Bs
+            __shared__ float As[BM*BK];
+            __shared__ float Bs[BN*BK];
+
+            // temporary values of given thread at slide
+            float tmp[TM] = {0.0};
+            // block sliding for-loop
+            for (int blckIdx = 0; blckIdx < K; blckIdx += BK) {
+                // loading memory (see how continuous)
+                As[threadRowA*BK + threadColA] = A[threadRowA*K + threadColA];
+                Bs[threadRowB*BN + threadColB] = B[threadRowB*N + threadColB];
+                __syncthreads(); // making sure memory loaded before computations
+
+                // adjusting pointers for next-run
+                A += BK;
+                B += BK*N;
+
+                // dot product outside (each ith/jth index)
+                // inside we have the thread idx we calculate.
+                // this is so we can re-use our B value
+                for (int dotIdx = 0; dotIdx < BK;dotIdx++) {
+                    // storing B value and doing 1st fmad with each col
+                    float Btemp = Bs[threadRowB + dotIdx*BN];
+                    for (int rowIdx = 0; rowIdx < TM; rowIdx++) {
+                        tmp[rowIdx] += As[dotIdx + rowIdx*BK] * Btemp; // 1 load, 1 reg
+                                    
+                    }
+                }
+                __syncthreads(); // waiting for operations to complete before next mem load
+            }
+            // filling in block results with 8 results per thread
+            const int cCol = threadIdx.x % BN;
+            const int cRow = (threadIdx.x / BM) * 8; // leaving room for extra
+            for (int Cidx = 0; Cidx < TM; Cidx ++) {
+                C[cCol + cRow*N + N*Cidx] = alpha * tmp[Cidx] + beta * C[cCol + cRow*N + N*Cidx];
+            }
+
+        }
+
+When I run this kernel, I get a 3x speedup! Furthermore, the instruction mix is much better (more Fmads), and warps spend less time stalled.
+
+-----------------------------------------------------
+![pic1](instrmix4.png)
+![pic2](warpstate4.png)
+------------------------------------------------------
+
+> Note that the axis changes on the second warp state picture!
+
+And as we can see in our ptx code:
+
+        ld.shared.f32 	%f146, [_ZZ11blockTile1DiiiPfS_S_iiE2As+28];
+        ld.shared.f32 	%f147, [%r5+1792];
+        fma.rn.f32 	%f188, %f147, %f146, %f131;
+        ld.shared.f32 	%f148, [_ZZ11blockTile1DiiiPfS_S_iiE2As+60];
+        fma.rn.f32 	%f187, %f147, %f148, %f133;
+        ld.shared.f32 	%f149, [_ZZ11blockTile1DiiiPfS_S_iiE2As+92];
+        fma.rn.f32 	%f186, %f147, %f149, %f135;
+        ld.shared.f32 	%f150, [_ZZ11blockTile1DiiiPfS_S_iiE2As+124];
+        fma.rn.f32 	%f185, %f147, %f150, %f137;
+        ld.shared.f32 	%f151, [_ZZ11blockTile1DiiiPfS_S_iiE2As+156];
+        fma.rn.f32 	%f184, %f147, %f151, %f139;
+        ld.shared.f32 	%f152, [_ZZ11blockTile1DiiiPfS_S_iiE2As+188];
+        fma.rn.f32 	%f183, %f147, %f152, %f141;
+        ld.shared.f32 	%f153, [_ZZ11blockTile1DiiiPfS_S_iiE2As+220];
+        fma.rn.f32 	%f182, %f147, %f153, %f143;
+        ld.shared.f32 	%f154, [_ZZ11blockTile1DiiiPfS_S_iiE2As+252];
+        fma.rn.f32 	%f181, %f147, %f154, %f145;
+
+inside our row-for-loop, since we stored our Btemp in a register, we only have 1 load per fma (fused multiply-add)!
+
+This makes sense, because : TODO:
 
 
 

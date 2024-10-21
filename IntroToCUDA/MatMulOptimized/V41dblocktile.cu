@@ -20,8 +20,10 @@
 #define N 4092
 #define K 4092
 
-#define BLOCK_SIZE 32
-#define SMEM_CHUNK_SIZE 32
+// in this case, our blocks are 64 * 8,
+// so two slides across collumn with warptiles
+// and 8 slides down across rows
+#define BLOCK_SIZE 64*8
 
 // time function
 double get_time() {
@@ -40,66 +42,73 @@ void matrixInit(float *m, int size) {
 }
 
 // smem cacheing + global mem coalescing + 1d blocktiling
-__global__ void smemMatMul(int m, int n, int k,float* A, float* B, float *C,float alpha,float beta) {
-    // dimensions for warptile
-    const int BN = 64;// how many cols in warptile
-    const int BM = 64; // length of rows
-    const int BK = 8; // length m1, width m2
-    const int TM = 8; // num results per thread
+__global__ void blockTile1D(int m, int n, int k, float *A, float *B, float *C,int alpha,int beta){
+    // defining our block position
+    const int blockCol = blockIdx.x;
+    const int blockRow = blockIdx.y;
 
-    // block positions in grid
-    const int cRow = blockIdx.y;
-    const int cCol = blockIdx.x;
-    
-    // thread positions in block 
-    // col should access continous memory in matrix to group loads
-    const int threadRow = blockIdx.x / BLOCK_SIZE;
-    const int threadCol  =blockIdx.x % BLOCK_SIZE; 
+    // defining how large our 'slides' will be
+    // A: BMxBK, B: BK*BN
+    const int BM = 64;
+    const int BN = 64; 
+    const int BK = 8;
+    const int TM = 8;
 
-    // advancing pointers to starting slide position
-    A += cRow * BLOCK_SIZE;
-    B += cCol * BLOCK_SIZE* N;
-    C += cRow*BLOCK_SIZE + cCol*BLOCK_SIZE*N;
+    assert(BM*BN == TM*BK*BM); // making sure the number we calculate equal to number we must
 
-    // smem caches
+    // getting pointers at starting position alligned w/block
+    A += blockRow*BM*K;
+    B += blockCol*BN;
+    C += blockRow*BN*N + blockCol*BM;
+
+    // defining how we load A/Bs with threads,
+    // make sure we access continously, and shapes match
+    const int threadRowA = threadIdx.x / BK;
+    const int threadColA = threadIdx.x % BK;
+    const int threadRowB = threadIdx.x / BN;
+    const int threadColB = threadIdx.x % BN;
+
+    // shared smem for As and Bs
     __shared__ float As[BM*BK];
     __shared__ float Bs[BN*BK];
 
-    // now index for our given warptile inside block
-    assert(BM*BK == blockDim.x); // block will work in this with threads
-    assert(BN*BK == blockDim.x);
+    // temporary values of given thread at slide
+    float tmp[TM] = {0.0};
+    // block sliding for-loop
+    for (int blckIdx = 0; blckIdx < K; blckIdx += BK) {
+        // loading memory (see how continuous)
+        As[threadRowA*BK + threadColA] = A[threadRowA*K + threadColA];
+        Bs[threadRowB*BN + threadColB] = B[threadRowB*N + threadColB];
+        __syncthreads(); // making sure memory loaded before computations
 
-    const int innerColA = threadIdx.x % BK;
-    const int innerRowA = threadIdx.x / BK;
-    const int innerColB = threadIdx.x % BN;
-    const int innerRowB = threadIdx.x / BN;
-
-    // outer block loop
-    float tmp[TM] = {0.0}; // storing dot prod current sum on register
-    for (int i = 0; i<K; i+=BK) { 
-        // load smem caches with indiv. threads
-        // notice how we allign continuity with threadidx (threadcol)
-        As[threadCol + M*threadRow] = A[threadCol+threadRow*m];
-        Bs[threadCol + M*threadRow] = B[threadCol+threadRow*n];
-        __syncthreads();
-
-        // adv. blocktile slide
+        // adjusting pointers for next-run
         A += BK;
         B += BK*N;
 
-        // per-thread results
-        for (int dotIdx = 0; dotIdx < BK; dotIdx++) {
-            // making dot product the outside loop, so we can reuse 
-            for (int l = 0; l < )
+        // dot product outside (each ith/jth index)
+        // inside we have the thread idx we calculate.
+        // this is so we can re-use our B value
+        for (int dotIdx = 0; dotIdx < BK;dotIdx++) {
+            // storing B value and doing 1st fmad with each col
+            float Btemp = Bs[threadRowB + dotIdx*BN];
+            for (int rowIdx = 0; rowIdx < TM; rowIdx++) {
+                tmp[rowIdx] += As[dotIdx + rowIdx*BK] * Btemp; // 1 load, 1 reg
+                            
+            }
         }
-
-        
+        __syncthreads(); // waiting for operations to complete before next mem load
     }
-    
-
-
+    // filling in block results with 8 results per thread
+    const int cCol = threadIdx.x % BN;
+    const int cRow = (threadIdx.x / BM) * 8; // leaving room for extra
+    for (int Cidx = 0; Cidx < TM; Cidx ++) {
+        C[cCol + cRow*N + N*Cidx] = alpha * tmp[Cidx] + beta * C[cCol + cRow*N + N*Cidx];
+    }
 
 }
+
+
+
 
 
 int main() {
@@ -127,15 +136,18 @@ int main() {
     float beta = 1-alpha;
     
     // dimensions for x/y
-    dim3 blockSize = {BLOCK_SIZE*BLOCK_SIZE}; //1d to manip.
-    dim3 numBlocks = {(M+BLOCK_SIZE-1)/BLOCK_SIZE,
-                      (N+BLOCK_SIZE-1)/BLOCK_SIZE};
+    const int B1 = 8;
+    const int B2 = 64;
+    dim3 blockSize = {B1*B2}; //1d to manip.
+    // since in down direction each thread does 8x more
+    dim3 numBlocks = {(M+(B1*8)-1)/(B1*8),
+                      (N+B2-1)/B2};
 
     
 
     // warmup
     for (int i = 0; i < 4; i++){
-        smemMatMul<<<numBlocks,blockSize>>>(M,N,K,a_d,b_d,c_d,alpha,beta);
+        blockTile1D<<<numBlocks,blockSize>>>(M,N,K,a_d,b_d,c_d,alpha,beta);
         cudaDeviceSynchronize();
     
     }
@@ -143,7 +155,7 @@ int main() {
     // running and debugging
     //nvtxRangePush("MatMul");
     double start = get_time();
-    smemMatMul<<<numBlocks,blockSize>>>(M,N,K,a_d,b_d,c_d,alpha,beta);
+    blockTile1D<<<numBlocks,blockSize>>>(M,N,K,a_d,b_d,c_d,alpha,beta);
     cudaDeviceSynchronize();
     double end = get_time();
     //nvtxRangePop();
@@ -152,7 +164,7 @@ int main() {
     // checking results
     printf("Time: %fms\n",(end-start)*1000.0);
     cudaMemcpy(c_h,c_d,sizeof(float)*M*N,cudaMemcpyDeviceToHost);
-    printf("GPU Results: (%f,%f,%f,%f)\n",c_h[30],c_h[10000],c_h[1000000],c_h[99999]);
+    printf("GPU Results: (%f,%f,%f,%f)\n",c_h[30],c_h[10000],c_h[1000000],c_h[16744463]);
     
 
     // freeing memory
