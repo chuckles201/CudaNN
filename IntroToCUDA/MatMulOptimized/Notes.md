@@ -207,7 +207,7 @@ Here is the 'instruction mix' for our kernel.
 2. FMA are fused multiply-adds (in our dot product)
 3. IADD3 are our pointer additions
 
-Looks like we are spenting a disproportional amount of time
+Looks like we are spenting a disproportional amount of our instructions loading memory.
 
 
 If we want to look further we can run this to see the compiler code
@@ -366,9 +366,26 @@ And as we can see in our ptx code:
 
 inside our row-for-loop, since we stored our Btemp in a register, we only have 1 load per fma (fused multiply-add)!
 
-This makes sense, because : TODO:
+This makes sense, because we use much less memory per result (each result is a fixed number of fmads).
+
+        Memory acess per result in V3:
+        GMEM: (K/32) iterations * 2 loads 
+        SMEM: K/32 iterations * BK=32 * 2 loads
+        == {K/16 GMEM, 2K SMEM} 
+-------------------------------------------------------------------------------
+        Memory acess per result in V3: (x8 bc 8 per thread)
+        GMEM: (K/8 iterations * 2 loads) / 8 results
+        SMEM: K/8 iterations * BK(=8) dot prod loop * (TM+1==9) 1B, 8 A's / 8 res.
+        == {K/32 GMEM, 9K/8 SMEM}
+
+So, clearly we are using less memory per result in V4, and our results make sense.
+
+The GMEM makes sense, because we are calculating 64x64 results, and this means overall we have less 'overlap'
+(ideally we would just load the entire matrix into smem, but this is not possible). The reduced smem usage
+also makes sense; we are saving the Btemp value for our results, which saves us effectively half of our
+smem loads.
+
+Lets keep up our strategy of trying to load less memory and compute more things per thread.
 
 
-
-
-
+> TODO: Why does multiple results per thread result in less memory usage?

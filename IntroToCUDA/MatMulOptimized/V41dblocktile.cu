@@ -41,69 +41,72 @@ void matrixInit(float *m, int size) {
     }
 }
 
-// smem cacheing + global mem coalescing + 1d blocktiling
-__global__ void blockTile1D(int m, int n, int k, float *A, float *B, float *C,int alpha,int beta){
-    // defining our block position
-    const int blockCol = blockIdx.x;
-    const int blockRow = blockIdx.y;
-
-    // defining how large our 'slides' will be
-    // A: BMxBK, B: BK*BN
+// smem cache + coalescing loads + warptiles
+__global__ void blockTile1D(int m, int n, int k, float *A, float *B, float* C, int alpha, int beta){
+    // defining our blocktile sizes
     const int BM = 64;
-    const int BN = 64; 
+    const int BN = 64;
     const int BK = 8;
     const int TM = 8;
 
-    assert(BM*BN == TM*BK*BM); // making sure the number we calculate equal to number we must
+    assert(TM*BK*BM == BM*BN); // 8 results per thread
 
-    // getting pointers at starting position alligned w/block
-    A += blockRow*BM*K;
-    B += blockCol*BN;
-    C += blockRow*BN*N + blockCol*BM;
-
-    // defining how we load A/Bs with threads,
-    // make sure we access continously, and shapes match
+    // thread rows for a/b different shapes because diff. size
+    // making sure cont. memory acessed by cont threadIdxs
+    // this is the memory we are loading from each blocktile
     const int threadRowA = threadIdx.x / BK;
     const int threadColA = threadIdx.x % BK;
     const int threadRowB = threadIdx.x / BN;
     const int threadColB = threadIdx.x % BN;
 
-    // shared smem for As and Bs
-    __shared__ float As[BM*BK];
-    __shared__ float Bs[BN*BK];
+    // starting off pointers at given block in grid
+    A += blockIdx.y * BM * K;
+    B += blockIdx.x * BN;
+    C += blockIdx.y * BN * N + blockIdx.x*BN;
 
-    // temporary values of given thread at slide
-    float tmp[TM] = {0.0};
-    // block sliding for-loop
+    // memory for smem cache
+    __shared__ float As[BK*BM];
+    __shared__ float Bs[BK*BM];
+
+    // memory for each result
+    float tmp[8] = {0.0};
+
+    // block tile loop
     for (int blckIdx = 0; blckIdx < K; blckIdx += BK) {
-        // loading memory (see how continuous)
-        As[threadRowA*BK + threadColA] = A[threadRowA*K + threadColA];
-        Bs[threadRowB*BN + threadColB] = B[threadRowB*N + threadColB];
-        __syncthreads(); // making sure memory loaded before computations
+        // loading memory into A and B dram-->smem
+        // notice that both a&b can be coalesced
+        As[threadRowA * BK + threadColA] = A[threadColA + threadRowA*K];
+        Bs[threadRowB * BN + threadColB] = B[threadColB + threadRowB*N];
+        __syncthreads(); // waiting until memory loaded to start ops
 
-        // adjusting pointers for next-run
+        // advancing pointers
         A += BK;
         B += BK*N;
 
-        // dot product outside (each ith/jth index)
-        // inside we have the thread idx we calculate.
-        // this is so we can re-use our B value
-        for (int dotIdx = 0; dotIdx < BK;dotIdx++) {
-            // storing B value and doing 1st fmad with each col
-            float Btemp = Bs[threadRowB + dotIdx*BN];
+        // dot product loop outside (given idx)
+        // inside we switch rows of A, so we can re-use Btemp
+        for (int dotIdx = 0; dotIdx < BK; dotIdx++) {
+            float Btemp = Bs[dotIdx*BN+threadColB]; // stored on register
             for (int rowIdx = 0; rowIdx < TM; rowIdx++) {
-                tmp[rowIdx] += As[dotIdx + rowIdx*BK] * Btemp; // 1 load, 1 reg
-                            
+                tmp[rowIdx] += Btemp * As[rowIdx*BK + dotIdx];
             }
         }
-        __syncthreads(); // waiting for operations to complete before next mem load
+        __syncthreads(); // wait until ops done to start loading mem again
+
     }
-    // filling in block results with 8 results per thread
+    // loading results of C
+    // note how we skip 8 spaces below for the threads to fill in
+    // with their 8 calculations
     const int cCol = threadIdx.x % BN;
-    const int cRow = (threadIdx.x / BM) * 8; // leaving room for extra
-    for (int Cidx = 0; Cidx < TM; Cidx ++) {
-        C[cCol + cRow*N + N*Cidx] = alpha * tmp[Cidx] + beta * C[cCol + cRow*N + N*Cidx];
+    const int cRow = (threadIdx.x / BM)*8;
+    for (int cIdx = 0; cIdx < TM; cIdx++) {
+        // add below row for below calculations (1 warp has 8x1 result block)
+        C[cCol + cRow*N + cIdx*N] = alpha*tmp[cIdx] + beta*C[cCol + cRow*N + cIdx*N];
     }
+
+    
+    
+
 
 }
 
