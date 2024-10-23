@@ -373,7 +373,7 @@ This makes sense, because we use much less memory per result (each result is a f
         SMEM: K/32 iterations * BK=32 * 2 loads
         == {K/16 GMEM, 2K SMEM} 
 -------------------------------------------------------------------------------
-        Memory acess per result in V3: (x8 bc 8 per thread)
+        Memory acess per result in V4: (/8 bc 8 per thread)
         GMEM: (K/8 iterations * 2 loads) / 8 results
         SMEM: K/8 iterations * BK(=8) dot prod loop * (TM+1==9) 1B, 8 A's / 8 res.
         == {K/32 GMEM, 9K/8 SMEM}
@@ -381,11 +381,153 @@ This makes sense, because we use much less memory per result (each result is a f
 So, clearly we are using less memory per result in V4, and our results make sense.
 
 The GMEM makes sense, because we are calculating 64x64 results, and this means overall we have less 'overlap'
-(ideally we would just load the entire matrix into smem, but this is not possible). The reduced smem usage
-also makes sense; we are saving the Btemp value for our results, which saves us effectively half of our
+(ideally we would just load the entire matrix into smem, but this is not possible). The reduced smem usage also makes sense; we are saving the Btemp value for our results, which saves us effectively half of our
 smem loads.
 
 Lets keep up our strategy of trying to load less memory and compute more things per thread.
 
+### ***Aside***: compiler optimziation
 
-> TODO: Why does multiple results per thread result in less memory usage?
+We specically make sure to cache the entry of B that we use in our dot product, by having our dot product idx as the outside loop, and reuse the 'btemp' variable
+
+If we didn't, our code would look like this:
+
+    // doing naive way with dot product in inner loop
+            for (int rowIdx = 0; rowIdx < TM; rowIdx++ ) {
+                // dot product inner loop this time
+                for (int dotIdx = 0; dotIdx < BK; dotIdx++) {
+                    tmp[rowIdx] += As[rowIdx*BK + dotIdx] * Bs[threadColB + dotIdx*BN];
+                }
+            }
+
+however, we still acheive the same exact preformance for both kernels. How is this so, if even when we don't explicitly re-use our Btemp, our kernel still runs the same? (we are loading 2K SMEM, almost twice as much)
+
+Here is the ptx code:
+
+        ld.shared.f32 	%f27, [%r5];
+        ld.shared.f32 	%f28, [_ZZ11blockTile1DiiiPfS_S_iiE2As];
+        fma.rn.f32 	%f29, %f28, %f27, %f188;
+        ld.shared.f32 	%f30, [%r5+256];
+        ld.shared.f32 	%f31, [_ZZ11blockTile1DiiiPfS_S_iiE2As+4];
+        fma.rn.f32 	%f32, %f31, %f30, %f29;
+        ld.shared.f32 	%f33, [%r5+512];
+        ld.shared.f32 	%f34, [_ZZ11blockTile1DiiiPfS_S_iiE2As+8];
+        fma.rn.f32 	%f35, %f34, %f33, %f32;
+        ld.shared.f32 	%f36, [%r5+768];
+        ld.shared.f32 	%f37, [_ZZ11blockTile1DiiiPfS_S_iiE2As+12];
+        fma.rn.f32 	%f38, %f37, %f36, %f35;
+        ld.shared.f32 	%f39, [%r5+1024];
+        ld.shared.f32 	%f40, [_ZZ11blockTile1DiiiPfS_S_iiE2As+16];
+        fma.rn.f32 	%f41, %f40, %f39, %f38;
+        ld.shared.f32 	%f42, [%r5+1280];
+        ld.shared.f32 	%f43, [_ZZ11blockTile1DiiiPfS_S_iiE2As+20];
+        fma.rn.f32 	%f44, %f43, %f42, %f41;
+        ld.shared.f32 	%f45, [%r5+1536];
+        ld.shared.f32 	%f46, [_ZZ11blockTile1DiiiPfS_S_iiE2As+24];
+        fma.rn.f32 	%f47, %f46, %f45, %f44;
+        ld.shared.f32 	%f48, [%r5+1792];
+        ld.shared.f32 	%f49, [_ZZ11blockTile1DiiiPfS_S_iiE2As+28];
+        fma.rn.f32 	%f188, %f49, %f48, %f47;
+        ld.shared.f32 	%f50, [_ZZ11blockTile1DiiiPfS_S_iiE2As+32];
+        fma.rn.f32 	%f51, %f50, %f27, %f187;
+        ld.shared.f32 	%f52, [_ZZ11blockTile1DiiiPfS_S_iiE2As+36];
+        fma.rn.f32 	%f53, %f52, %f30, %f51;
+        ld.shared.f32 	%f54, [_ZZ11blockTile1DiiiPfS_S_iiE2As+40];
+        fma.rn.f32 	%f55, %f54, %f33, %f53;
+        ld.shared.f32 	%f56, [_ZZ11blockTile1DiiiPfS_S_iiE2As+44];
+        fma.rn.f32 	%f57, %f56, %f36, %f55;
+        ld.shared.f32 	%f58, [_ZZ11blockTile1DiiiPfS_S_iiE2As+48];
+        fma.rn.f32 	%f59, %f58, %f39, %f57;
+        ld.shared.f32 	%f60, [_ZZ11blockTile1DiiiPfS_S_iiE2As+52];
+        fma.rn.f32 	%f61, %f60, %f42, %f59;
+        ld.shared.f32 	%f62, [_ZZ11blockTile1DiiiPfS_S_iiE2As+56];
+        fma.rn.f32 	%f63, %f62, %f45, %f61;
+        ld.shared.f32 	%f64, [_ZZ11blockTile1DiiiPfS_S_iiE2As+60];
+        fma.rn.f32 	%f187, %f64, %f48, %f63;
+        ld.shared.f32 	%f65, [_ZZ11blockTile1DiiiPfS_S_iiE2As+64];
+        fma.rn.f32 	%f66, %f65, %f27, %f186;
+        ld.shared.f32 	%f67, [_ZZ11blockTile1DiiiPfS_S_iiE2As+68];
+        fma.rn.f32 	%f68, %f67, %f30, %f66;
+        ld.shared.f32 	%f69, [_ZZ11blockTile1DiiiPfS_S_iiE2As+72];
+        fma.rn.f32 	%f70, %f69, %f33, %f68;
+        ld.shared.f32 	%f71, [_ZZ11blockTile1DiiiPfS_S_iiE2As+76];
+        fma.rn.f32 	%f72, %f71, %f36, %f70;
+        ld.shared.f32 	%f73, [_ZZ11blockTile1DiiiPfS_S_iiE2As+80];
+        fma.rn.f32 	%f74, %f73, %f39, %f72;
+        ld.shared.f32 	%f75, [_ZZ11blockTile1DiiiPfS_S_iiE2As+84];
+        fma.rn.f32 	%f76, %f75, %f42, %f74;
+        ld.shared.f32 	%f77, [_ZZ11blockTile1DiiiPfS_S_iiE2As+88];
+        fma.rn.f32 	%f78, %f77, %f45, %f76;
+        ld.shared.f32 	%f79, [_ZZ11blockTile1DiiiPfS_S_iiE2As+92];
+        fma.rn.f32 	%f186, %f79, %f48, %f78;
+        ld.shared.f32 	%f80, [_ZZ11blockTile1DiiiPfS_S_iiE2As+96];
+        fma.rn.f32 	%f81, %f80, %f27, %f185;
+        ld.shared.f32 	%f82, [_ZZ11blockTile1DiiiPfS_S_iiE2As+100];
+        fma.rn.f32 	%f83, %f82, %f30, %f81;
+        ld.shared.f32 	%f84, [_ZZ11blockTile1DiiiPfS_S_iiE2As+104];
+        fma.rn.f32 	%f85, %f84, %f33, %f83;
+        ld.shared.f32 	%f86, [_ZZ11blockTile1DiiiPfS_S_iiE2As+108];
+        fma.rn.f32 	%f87, %f86, %f36, %f85;
+
+Lets try to understand what's going on here.
+
+- Our first code optimized smem access by re-using our Btemp, however this second loop seems to do the same number of loads, but in a different order (double loads are at the beginning). 
+
+- Basically what is happening, is the compiler is unrolling the for-loop, spotting that a single B is loaded multiple times, and groups this load at the beginning so we can essentially acheive the same result, just in a somewhat odd order.
+
+Here is some of the SASS code which is basically the assembly for CUDA:
+
+        LDS R26, [R35.X4+0x800] 
+        LDS.128 R8, [R2] 
+        LDS.128 R12, [R2+0x20] 
+        LDS R24, [R35.X4+0x900] 
+        LDS.128 R20, [R2+0x60] 
+        LDS R36, [R35.X4+0xb00] 
+        LDS.128 R16, [R2+0x40] 
+        LDS.128 R4, [R2+0x80] 
+        LDS R38, [R35.X4+0xd00] 
+        FFMA R45, R26, R8, R25 
+        LDS R25, [R35.X4+0xa00] 
+        FFMA R12, R26, R12, R27 
+        FFMA R8, R24, R9, R45 
+        FFMA R13, R24, R13, R12 
+        FFMA R41, R26, R20, R41 
+        FFMA R12, R24, R21, R41 
+        FFMA R16, R26, R16, R31 
+        FFMA R17, R24, R17, R16 
+
+> Although the order may seem odd, know that the code will always be equivelant, and it changes the order of FMAs and loads to optimize the use of the hardware. 
+
+We can see that we have regular LDS, which are our loads of A from smem, and we also see we have LDS.128 which are 'vectorized' loads from 'B'. 
+
+This is because beacuse different threads within a warp will acess continous values of B:
+1. In our for loop, we load TODO
+2. As are loaded row-by-row in the loop, so vectorized mem. acess is not possible.
+
+
+> TODO #1 : Get back
+
+--------------------------------------------------------------------------
+
+### ***Aside*** Arithmetic intensity
+
+- Since our kernel still is not acheiving its optimal preformance, and it is 'stalling' waiting for memory, we should calculate more results per thread.
+- This means we will have less blocks overall, but we will re-use our threads to no adverse affect
+- The key metric we are optimizing is number of operations per memory load; or, ***arithmetic intensity***
+
+> Remember, the more threads we have, doesn't mean more parralelism (if our sm is saturated). We want to re-use our threads, since our multiprocessor can only store so much smem, and as long as we are limited by memory, we want to do as many operations per thread as possible, given that we re-use more memory.
+>
+> Threads are just abstractions for use to use are hardware: and we want to use it in a more arithmetic-intensive way now.
+
+- When we used 1 thread to calculate 1 element in our naive kernel, we were re-using rows and collumns
+- When we calculated 8x1, we were re-loading the same col. from B less, but still having more loads from A
+- If we compute a square (kxk) chunk with each thread, we will reduce overlap even more, reducing gmem usage even more
+- This is because with larger blocks (blockDim*results per thread) we re-use our rows/ collumns less. And with more results per thread, we have larger blocks.
+
+> If a collumn produces a 2x2 result, it will load 4 k-long vectors (2B, 2A), versus if it has to calculate a 4x1 chunk, it will load 5-k vectors, reducing arithmetic intensity
+
+- so, we can just focus on trying to maximize a given threads ops-per-load, and the larger square we compute, the less we are loading (nk+nk), and the more we are computing (n^2).
+
+
+## Kernel V5: 2d Blocktiling
+

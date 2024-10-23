@@ -16,9 +16,9 @@
 
 
 // Defining dimensions of  m1, n2, m2/n1
-#define M 4092
-#define N 4092
-#define K 4092
+#define M 4093
+#define N 4093
+#define K 4093
 
 // in this case, our blocks are 64 * 8,
 // so two slides across collumn with warptiles
@@ -83,12 +83,20 @@ __global__ void blockTile1D(int m, int n, int k, float *A, float *B, float* C, i
         A += BK;
         B += BK*N;
 
-        // dot product loop outside (given idx)
-        // inside we switch rows of A, so we can re-use Btemp
-        for (int dotIdx = 0; dotIdx < BK; dotIdx++) {
-            float Btemp = Bs[dotIdx*BN+threadColB]; // stored on register
-            for (int rowIdx = 0; rowIdx < TM; rowIdx++) {
-                tmp[rowIdx] += Btemp * As[rowIdx*BK + dotIdx];
+        // // dot product loop outside (given idx)
+        // // inside we switch rows of A, so we can re-use Btemp
+        // for (int dotIdx = 0; dotIdx < BK; dotIdx++) {
+        //     float Btemp = Bs[dotIdx*BN+threadColB]; // stored on register
+        //     for (int rowIdx = 0; rowIdx < TM; rowIdx++) {
+        //         tmp[rowIdx] += Btemp * As[rowIdx*BK + dotIdx];
+        //     }
+        // }
+
+        // doing naive way with dot product in inner loop ==> still works!
+        for (int rowIdx = 0; rowIdx < TM; rowIdx++ ) {
+            // dot product inner loop this time
+            for (int dotIdx = 0; dotIdx < BK; dotIdx++) {
+                tmp[rowIdx] += As[rowIdx*BK + dotIdx] * Bs[threadColB + dotIdx*BN];
             }
         }
         __syncthreads(); // wait until ops done to start loading mem again
@@ -167,7 +175,7 @@ int main() {
     // checking results
     printf("Time: %fms\n",(end-start)*1000.0);
     cudaMemcpy(c_h,c_d,sizeof(float)*M*N,cudaMemcpyDeviceToHost);
-    printf("GPU Results: (%f,%f,%f,%f)\n",c_h[30],c_h[10000],c_h[1000000],c_h[16744463]);
+    printf("GPU Results: (%f,%f,%f,%f)\n",c_h[30],c_h[10000],c_h[1000000],c_h[1674463]);
     
 
     // freeing memory
