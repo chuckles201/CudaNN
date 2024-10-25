@@ -28,6 +28,11 @@ __global__ void vectorLoad(float *A,float *C) {
     Cs[2] = A[2];
     Cs[3] = A[3];
 
+    C[0] = Cs[0];
+    C[1] = Cs[1];
+    C[2] = Cs[2];
+    C[3] = Cs[3];
+
 }
 
 int main() {
