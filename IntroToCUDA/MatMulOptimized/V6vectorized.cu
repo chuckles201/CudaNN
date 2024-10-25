@@ -75,7 +75,7 @@ blockTile2D(int m, int n, int k, float *A, float *B, float *C, float alpha, floa
     C += blockCol*BN+blockRow*BM*n;
 
     // shared memory for each BM,n*BK block
-    __shared__ float As[BM*BK];
+    __shared__ float As[BK*BM]; // transposed!
     __shared__ float Bs[BK*BN];
 
     // registers for reusing cols/rows
@@ -95,7 +95,7 @@ blockTile2D(int m, int n, int k, float *A, float *B, float *C, float alpha, floa
 
     // strides should be the number we need
     // to have loaded all cols
-    const int strideA = numThreads / BK;
+    const int strideA = numThreads / BK; // TRANSPOSED
     const int strideB = numThreads / BN;
 
 
@@ -106,9 +106,11 @@ blockTile2D(int m, int n, int k, float *A, float *B, float *C, float alpha, floa
 
         // loading As and Bs with BM*BK/numthreads block slides
         // sliding down cols to preserve gmem coalescing
-        for (int aOffset = 0; aOffset < BM; aOffset += strideA){
-            As[innerColA+(innerRowA+aOffset)*BK]
-             = A[innerColA+(innerRowA+aOffset)*k];
+        // A is transposed
+        for (int aOffset = 0; aOffset < BK; aOffset += strideA){
+            // transpose our memory that we load
+            As[innerRowA+aOffset+innerColA*BM]
+             = A[(innerRowA+aOffset)*k+innerColA];
         }
         for (int bOffset = 0; bOffset < BK; bOffset += strideB){
             Bs[innerColB+(innerRowB+bOffset)*BN]
@@ -126,7 +128,7 @@ blockTile2D(int m, int n, int k, float *A, float *B, float *C, float alpha, floa
             // each ith dotIdx of B with all
             // jth dotIdx of A for maximum reuse!
             for(int mIdx = 0; mIdx < TM; mIdx++){
-                regM[mIdx] = As[(threadRow*TN+mIdx)*BK+dotIdx];
+                regM[mIdx] = As[dotIdx*BM+threadRow+mIdx];
             }
             for(int nIdx = 0; nIdx < TN; nIdx++){
                 regN[nIdx] = Bs[threadCol*TM + nIdx+dotIdx*BN];

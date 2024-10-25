@@ -21,11 +21,16 @@ Then we can simple run in the terminal:
         or
         ncu --set detailed -o profile ./test
         ncu-ui profile
+
+
+        nvcc -arch=sm_89 -Xptxas -v my_program.cu -o run --> registers/smem info
         
 this will give us simple stats about our program!
 
 2. Useful commands for debugging memory usage/compiler code
         nvcc -ptx matmulV3.cu --> full compiler code
-        nvcc -arch=sm_89 -Xptxas -v my_program.cu -o run --> registers/smem info
+
+        nvcc -cubin example_cuda_kernel.cu -o example_cuda_kernel.cubin
+        cuobjdump -sass example_cuda_kernel.cubin > example_cuda_kernel.sass
 
 

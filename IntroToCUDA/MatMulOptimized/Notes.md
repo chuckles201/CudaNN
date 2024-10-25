@@ -531,3 +531,207 @@ This is because beacuse different threads within a warp will acess continous val
 
 ## Kernel V5: 2d Blocktiling
 
+In this kernel we'll be combining the previous ideas, and now just computing a 2D chunk per thread instead of a collumn. 
+
+Some important differences are that each thread loads about 8 results per BKxBN block, and that we store the entire ith element of B cols and jth element of A rows when doing the nth dotIdx. This allows us to maximize the re-use and minimize smem loads. Furthermore, we reduce the GMEM acesses because of reasons described above.
+
+        // template defines how large the chunks we are loading from
+        // in our slides, and how many results we're calculating per thread
+
+        // in launch_bounds, we specify: {maxthread/block,minblcks per sm}
+        // threads/block will be maxed at the size/resultsperthread
+        template<const int BM,const int BN,const int TN,const int TM, const int BK>
+        __global__ void __launch_bounds__((BM*BN)/(TM*TN),1)
+        blockTile2D(int m, int n, int k, float *A, float *B, float *C, int alpha, int beta){
+            // defining where we are in the matrix with
+            // respect to blocks location
+            const int bCol = blockIdx.x;
+            const int bRow = blockIdx.y;
+
+            // offsetting our pointers to col loc.
+            A += bRow * BM * K;
+            B += bCol * BN;
+            C += bRow * BM * n + bCol*BN;
+
+            // results/resultsperthread=total
+            const int totalThreads = BM*BN / (TM*TN);
+
+            // defining where thread is within a block'
+            // 8x8 threads, with 8x8 area for each thread
+            const int threadRow = (threadIdx.x / BK)*TM;
+            const int threadCol = (threadIdx.x % BK)*TN;
+
+            // defining smem for both A and B within 
+            // each block
+            __shared__ float As[BM*BK];
+            __shared__ float Bs[BN*BK];
+
+            // defining what positions each thread will
+            // load memory into smem, and the strides.
+            // threads span across cols for gmem coalescing!
+            const int threadColA = threadIdx.x % BK;
+            const int threadRowA = threadIdx.x / BK;
+
+            const int threadRowB = threadIdx.x / BN;
+            const int threadColB = threadIdx.x % BN;
+
+            const int strideB = totalThreads / BN; // col-span
+            const int strideA = totalThreads / BK;
+
+            // defining our registers: we save a row of B
+            // and a collumn of A for each dot prod for loop
+            float regM[TM] = {0.0}; // store dot jth of A
+            float regN[TN] = {0.0}; // store dot ith of B
+
+            // register for our 2d block of results
+            float threadResult[TM*TN] = {0.0};
+
+            // outer block loop
+            for(int blckIdx = 0; blckIdx < k; blckIdx += BK) {
+                // loading As into smem cache
+                // advancing down rows (strideA)
+                for (int offsetA = 0; offsetA < BM; offsetA += strideA) {
+                    As[(offsetA+threadRowA)*BK + threadColA] = 
+                    A[(offsetA+threadRowA)*k + threadColA];
+                }
+
+                for (int offsetB = 0; offsetB < BK; offsetB += strideB) {
+                    Bs[(offsetB+threadRowB)*BN+threadColB] = 
+                    B[(offsetB+threadRowB)*n+threadColB];
+                }
+                __syncthreads(); // wait until memory loaded to access
+
+                // advancing pointers
+                A += BK;
+                B += BK*n;
+
+                // dot product loop on outside, so we can save
+                // dotIdx ith from B, jth from A into registers
+                // and add this to our total BK times
+                for(int dotIdx = 0; dotIdx < BK; dotIdx++) {
+                    // saving vals into registers
+                    for (int i = 0; i < TM; i++){
+                        // index at blocks  position to relevant
+                        // thread which computes TMxTN square
+                        regM[i] = As[dotIdx + (threadRow+i)*BK];
+                    }
+                    // load the collumn we're computing
+                    for (int i = 0; i < TN; i++){
+                        // index at blocks  position to relevant
+                        // A row. Same for all threads in a block
+                        regN[i] = Bs[i + dotIdx*BN + threadCol];
+                    }
+
+                    // computing by reusing each ith B to hit all
+                    // jth A's, TMxTN 1/dotlength parts of tile!
+                    // loading part of collumn and hitting all rows first
+                    for (int nIdx=0; nIdx < TN; nIdx++){
+                        for (int mIdx = 0; mIdx < TM; mIdx++){
+                            // adding to appropriate spot
+                            // dotIdxth part of the dot
+                            threadResult[nIdx+mIdx*TN] +=
+                            regN[nIdx] * regM[mIdx];
+                        }
+                    }
+                }
+                __syncthreads(); // now need to wait until all ops done
+
+            } // end of block-slide
+
+            // putting in results of C
+            for(int mIdx = 0; mIdx < TM; mIdx++){
+                for(int nIdx = 0; nIdx < TN; nIdx++){
+                    // sliding over block of C
+                    C[(threadRow+mIdx)*n+nIdx+threadCol] =
+                    alpha*threadResult[mIdx*TN+nIdx] + beta*C[(threadRow+mIdx)*n+nIdx+threadCol];
+                }
+            }
+        }
+
+Note that our instructions have the same overall affect as previous kernel:
+
+1. Set overall block adress/ initialize pointers
+2. Do 'slides' across the K acess, summing them until we finish, loading the slides into smem
+3. Do outer dot product loop on our currently cached BK, saving as much memory into registers as possible
+
+> We acheive a ~2x speedup!
+
+Notice that in our inner dot product loop, we are computing one partial-sum for each element in our thread result, and each idx we add to these elements.
+
+### Memory acess in our kernel
+
+Now, lets compare our memory acess per result to our last kernel (V4)
+
+        New kernel GMEM/SMEM acess
+        GMEM: K/8 outer * 2 loadsA/B * 4 loads / 64  ==>
+        SMEM: K/8 outer * 8 inner * 2 A/B * 8 dot / 64 ==>
+        k/64 GMEM, k/4 SMEM 
+
+        versus in v4: K/32, 9K/8 --> much better!
+
+We can see this in our ptx code:
+
+        ld.shared.f32 	%f395, [%r76];
+        ld.shared.f32 	%f396, [%r69];
+        fma.rn.f32 	%f732, %f396, %f395, %f732;
+        ld.shared.f32 	%f397, [%r69+32];
+        fma.rn.f32 	%f724, %f397, %f395, %f724;
+        ld.shared.f32 	%f398, [%r69+64];
+        fma.rn.f32 	%f716, %f398, %f395, %f716;
+        ld.shared.f32 	%f399, [%r69+96];
+        fma.rn.f32 	%f708, %f399, %f395, %f708;
+        ld.shared.f32 	%f400, [%r69+128];
+        fma.rn.f32 	%f700, %f400, %f395, %f700;
+        ld.shared.f32 	%f401, [%r69+160];
+        fma.rn.f32 	%f692, %f401, %f395, %f692;
+        ld.shared.f32 	%f402, [%r69+192];
+        fma.rn.f32 	%f684, %f402, %f395, %f684;
+        ld.shared.f32 	%f403, [%r69+224];
+        fma.rn.f32 	%f676, %f403, %f395, %f676;
+        ld.shared.f32 	%f404, [%r76+4];
+        fma.rn.f32 	%f731, %f396, %f404, %f731;
+        fma.rn.f32 	%f723, %f397, %f404, %f723;
+        fma.rn.f32 	%f715, %f398, %f404, %f715;
+        fma.rn.f32 	%f707, %f399, %f404, %f707;
+        fma.rn.f32 	%f699, %f400, %f404, %f699;
+        fma.rn.f32 	%f691, %f401, %f404, %f691;
+        fma.rn.f32 	%f683, %f402, %f404, %f683;
+        fma.rn.f32 	%f675, %f403, %f404, %f675;
+        ld.shared.f32 	%f405, [%r76+8];
+        fma.rn.f32 	%f730, %f396, %f405, %f730;
+        fma.rn.f32 	%f722, %f397, %f405, %f722;
+        fma.rn.f32 	%f714, %f398, %f405, %f714;
+        fma.rn.f32 	%f706, %f399, %f405, %f706;
+        fma.rn.f32 	%f698, %f400, %f405, %f698;
+        fma.rn.f32 	%f690, %f401, %f405, %f690;
+        fma.rn.f32 	%f682, %f402, %f405, %f682;
+        fma.rn.f32 	%f674, %f403, %f405, %f674;
+
+we have many more fma's per load now!
+
+> Remember, our assembly code is just our insturctions re-ordered and optimized. It is equivialent to the instructions we wrote, however it is less interpretable. But over we can see the pattern that we are doing more compute, and therefore reducing our over-memory usage which is our current bottleneck.
+
+
+# Kernel 6 Vectorizing SMEM and GMEM acesses
+
+Although in our previous kernel, we were able to *coalesce* our gmem by having neighboring threadIdxs load continous memory from A and B, we can *vectorize* our loads in the following way:
+1. Have our 'slides' when we load memory into SMEM be continous in memory
+2. Since when we are loading As from smem into our registers, transpose the A matrix so we advance by collumns instead of rows and can vectorize our loads.
+
+The way we transpose our A matrix is as follows:
+- Load it into memory the same way we did with B, (sideways), just switching around our A col w/ As row that we load (making sure i/j reversed). (increment normally for A, but differently for As).
+- Then, load this memory transposed as A into regA, and get our vectorized results!
+
+We implement this and acheive a ~3% speedup.
+
+
+#### Pt.2 *GMEM LOADS*
+- Our smem loads to our registers where automatically unrolled by the compiler and vectorized.
+- GMEM is different, (because its controlled by the user) when we want to vectorize something when loading it from GMEM into SMEM, we are forced to manually specify this, despite acesses being continous in memory.
+
+
+
+
+
+
+
